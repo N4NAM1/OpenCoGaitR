@@ -1,0 +1,73 @@
+# 数据配置
+data_cfg:
+  dataset_name: CCPG
+  # 🔥 这里填你的父级目录，代码会自动拼 /RGB/
+  dataset_root: /root/autodl-tmp/CCPG_Processed
+  
+  # 索引文件
+  train_json: datasets/CCPG_RGB_JSON/CCPG/ccpg_cir_final.json
+  split_config: datasets/CCPG_RGB_JSON/CCPG/CCPG.json
+  
+  # 模式
+  use_features: false
+  # feature_root: "/root/autodl-tmp/CASIA-B-Processed/CLIP_feature_Unmasked"
+  
+  # 线程数
+  num_workers: 8
+
+  # 预处理 (使用我们在 transform.py 里写的类)
+  transform:
+    - type: CLIPImageProcessor
+      size: 224
+
+# 模型配置
+model_cfg:
+  model: GaitCIRModel  # 对应 gaitcir.py 里的类名
+  backbone: openai/clip-vit-base-patch32
+  
+  # Combiner 参数
+  projection_dim: 512
+  hidden_dim: 2048
+  loss_alpha: 0.5
+
+# 优化器
+optimizer_cfg:
+  solver: AdamW
+  lr: 1.0e-4
+  weight_decay: 0.01
+
+# 调度器
+scheduler_cfg:
+  scheduler: cosine
+  warmup_steps: 100
+
+# 训练引擎配置
+trainer_cfg:
+  save_name: GaitCIR_Baseline
+# ✅ 必须修改为 (CLIP 只能跑 FP32)
+  enable_float16: false
+  
+  # 建议同时关闭这个以节省显存
+  find_unused_parameters: false
+  epochs: 60
+  enable_float16: true
+  log_iter: 10000
+  save_iter: 10000
+  total_iter: 40000
+  with_test: false  # 训练中途是否测试
+  sampler:
+    batch_size: 64           # 训练时的 Batch Size
+    train_max_frames: 16     # 训练时的帧数
+    type: StandardSampler    # 占位符，表示使用标准 Mini-Batch 采样
+  
+  # DDP 参数
+  sync_BN: false
+  fix_BN: false
+  find_unused_parameters: true
+
+# 评估配置
+evaluator_cfg:
+  sampler:
+      batch_size: 32           # 测试时的 Batch Size
+      test_max_frames: all     # 评估时的帧数 (如果有)
+      type: InferenceSampler   # 占位符

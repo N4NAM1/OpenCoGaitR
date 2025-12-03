@@ -1,0 +1,27 @@
+# 这里的结构仿照 OpenGait，分为 data, model, trainer 三大块
+data_cfg:
+  dataset_name: "SUSTech1K"
+  dataset_root: "/root/autodl-tmp/SUSTech1K_Processed"
+  # feature_root: "/root/autodl-tmp/CCPG_Processed/CLIP_feature_Unmasked"
+  train_json: "datasets/SUSTech1K_RGB_JSON/SUSTech1K/ccpg_cir_final.json"
+  split_config: "datasets/SUSTech1K_RGB_JSON/SUSTech1K/SUSTech1K.json"
+
+  # 特征相关
+  use_features: False
+  
+  # 训练参数
+  train_max_frames: 16
+  batch_size: 32       # 单卡 Batch Size
+  num_workers: 8
+
+  transform:
+    - type: CLIPImageProcessor
+      size: 224  # 可选，默认就是 224
+model_cfg:
+  model: "GaitCIRModel"  # 关键：通过字符串指定模型名
+  backbone: "openai/clip-vit-base-patch32"
+
+trainer_cfg:
+  lr: 1e-4
+  epochs: 30
+  save_name: "GaitCIR_Baseline"
