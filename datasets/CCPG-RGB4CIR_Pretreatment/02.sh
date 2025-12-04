@@ -1,4 +1,4 @@
-DATA_ROOT="/root/autodl-tmp/CCPG_Processed"
+DATA_ROOT="/root/autodl-tmp/CCPG_Processed/RGB"
 OUTPUT="../CCPG_RGB_JSON/meta_ccpg_static.json"
 
 # ================= 运行 =================

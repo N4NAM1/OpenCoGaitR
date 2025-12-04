@@ -69,9 +69,10 @@ def run_model(cfgs, training):
     else:
         Model.run_test(model)
 
-
+#main:don't forget nccl or gloo
 if __name__ == '__main__':
-    torch.distributed.init_process_group('nccl', init_method='env://')
+    # torch.distributed.init_process_group('nccl', init_method='env://') 
+    torch.distributed.init_process_group('gloo', init_method='env://')
     if torch.distributed.get_world_size() != torch.cuda.device_count():
         raise ValueError("Expect number of available GPUs({}) equals to the world size({}).".format(
             torch.cuda.device_count(), torch.distributed.get_world_size()))

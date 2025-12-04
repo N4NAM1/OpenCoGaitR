@@ -1,10 +1,12 @@
 import os
+import json
 from time import strftime, localtime
 import numpy as np
 from utils import get_msg_mgr, mkdir
 
-from .metric import mean_iou, cuda_dist, compute_ACC_mAP, evaluate_rank, evaluate_many
+from .metric import mean_iou, cuda_dist, compute_ACC_mAP, evaluate_rank, evaluate_many, compute_gaitcir_metrics
 from .re_rank import re_ranking
+
 
 def de_diag(acc, each_angle=False):
     # Exclude identical-view cases
@@ -500,3 +502,79 @@ def evaluate_FreeGait(data, dataset, metric='euc'):
     # print_csv_format(dataset_name, results)
     msg_mgr.log_info(results)
     return results
+
+def print_gaitcir_report(metrics, k_list):
+    msg_mgr = get_msg_mgr() # 获取全局 logger
+    
+    # 使用 log_info 而不是 print
+    msg_mgr.log_info("\n" + "="*100)
+    
+    header = f"{'Task Type':<20} | {'Metric':<8}"
+    for k in k_list:
+        header += f" | {f'R@{k}':<6}"
+    header += f" | {'mAP':<6}"
+    
+    msg_mgr.log_info(header)
+    msg_mgr.log_info("-" * 100)
+    
+    order = ["attribute_change", "viewpoint_change", "composite_change", "Overall"]
+    for k in metrics.keys():
+        if k not in order: order.append(k)
+        
+    for task in order:
+        if task in metrics:
+            res = metrics[task]
+            count = res['Count']
+            msg_mgr.log_info(f"{task:<20} (N={count})")
+            
+            for m_type in ['Strict', 'Soft', 'ID']:
+                if m_type in res:
+                    d = res[m_type]
+                    row_str = f"  {'':<20} | {m_type:<8}"
+                    for k in k_list:
+                        val = d.get(f'R{k}', 0.0)
+                        row_str += f" | {val:>6.1f}"
+                    row_str += f" | {d['mAP']:>6.1f}"
+                    msg_mgr.log_info(row_str)
+            msg_mgr.log_info("-" * 40)
+    msg_mgr.log_info("="*100 + "\n")
+
+def evaluate_GaitCIR(data, dataset, metric_cfg=None, save_path=None):
+    if metric_cfg is None: metric_cfg = {}
+    msg_mgr = get_msg_mgr()
+    
+    # 1. 解包 & 计算
+    metrics = compute_gaitcir_metrics(
+        data['q_feats'], data['g_feats'], 
+        data['q_metas'], data['g_metas'], 
+        dataset_name=dataset, 
+        tasks=data['tasks'], 
+        config=metric_cfg
+    )
+    
+    # 2. 打印到日志文件和屏幕
+    k_list = metric_cfg.get('k_list', [1, 5, 10])
+    print_gaitcir_report(metrics, k_list)
+    
+    # 3. 🔥 保存 JSON 到实验目录
+    if save_path:
+        # 自动生成文件名: test_metrics_ITERATION.json (如果有 iter 信息更好，这里用时间戳或固定名)
+        # 建议直接叫 test_metric.json，每次测试覆盖该实验的旧结果
+        json_file = os.path.join(save_path, "test_metrics.json")
+        try:
+            with open(json_file, "w") as f:
+                def convert(o):
+                    if isinstance(o, np.float32): return float(o)
+                    return o
+                json.dump(metrics, f, indent=4, default=convert)
+            msg_mgr.log_info(f"✅ Metrics saved to: {json_file}")
+        except Exception as e:
+            msg_mgr.log_warning(f"Failed to save metrics json: {e}")
+    # 4. 返回给 Tensorboard
+    flatten_res = {}
+    if 'Overall' in metrics:
+        ov = metrics['Overall']
+        if 'Strict' in ov:
+            flatten_res['scalar/test_accuracy/Strict_R1'] = ov['Strict']['R1']
+            flatten_res['scalar/test_accuracy/Strict_mAP'] = ov['Strict']['mAP']
+    return flatten_res

@@ -176,7 +176,19 @@ class GaitCIRDataset(Dataset):
                 caption_inv = item.get('caption_inv', "").replace("{subject}", self.subject_token)
                 
                 return ref_out, tar_out, caption, caption_inv, item['task'], {
-                    "sid": str(item['sid']), "cond": str(item['tar']['condition']), "view": str(item['tar']['view'])
+                    "sid": str(item['sid']), 
+
+                    # 显式重命名为评估器需要的 Key
+                    "tar_cond": str(item['tar']['condition']), 
+                    "tar_view": str(item['tar']['view']),
+
+                    # 新增 Reference 信息
+                    "ref_cond": str(item['ref']['condition']),
+                    "ref_view": str(item['ref']['view']),
+
+                    # 保留旧 Key 以防万一
+                    "view": str(item['tar']['view']),
+                    "seq_path": str(item['ref']['seq_path'])
                 }
             except Exception:
                 if self.mode == 'train': idx = np.random.randint(len(self.data)); retries += 1
