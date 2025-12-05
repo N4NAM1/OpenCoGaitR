@@ -7,14 +7,11 @@ data_cfg:
   # 索引文件
   train_json: datasets/CCPG_RGB_JSON/CCPG/ccpg_cir_final.json
   split_config: datasets/CCPG_RGB_JSON/CCPG/CCPG.json
-  
+
   # 模式
   use_features: false
   # feature_root: "/root/autodl-tmp/CASIA-B-Processed/CLIP_feature_Unmasked"
   
-  # 线程数
-  num_workers: 8
-
   # 预处理 (使用我们在 transform.py 里写的类)
   transform:
     - type: CLIPImageProcessor
@@ -23,12 +20,15 @@ data_cfg:
 # 模型配置
 model_cfg:
   model: GaitCIRModel  # 对应 gaitcir.py 里的类名
+
   backbone: openai/clip-vit-base-patch32
   
   # Combiner 参数
   projection_dim: 512
   hidden_dim: 2048
   loss_alpha: 0.5
+
+
 
 # 优化器
 optimizer_cfg:
@@ -41,33 +41,63 @@ scheduler_cfg:
   scheduler: cosine
   warmup_steps: 100
 
+# Loss 配置 
+loss_cfg:
+  type: CrossEntropyLoss  # 指定 Loss 类型
+  log_prefix: clip_loss
+  alpha: 0.5              # 逆向 Loss 权重 (Inverse Loss Weight)（cosine_similarity）
+
 # 训练引擎配置
 trainer_cfg:
-  save_name: GaitCIR_Baseline
-# ✅ 必须修改为 (CLIP 只能跑 FP32)
-  enable_float16: false
-  
-  # 建议同时关闭这个以节省显存
-  find_unused_parameters: false
+  save_name: GaitCIR_Baseline_alpha0.5 #注意保存名称
   epochs: 60
+  # 🔥 训练时: 开启多进程加速读取
+  num_workers: 16
   enable_float16: true
+
+  clip_grad_norm: 5.0
+
   log_iter: 10000
   save_iter: 10000
   total_iter: 40000
   with_test: false  # 训练中途是否测试
   sampler:
-    batch_size: 64           # 训练时的 Batch Size
+    batch_size: 32          # 训练时的 Batch Size
     train_max_frames: 16     # 训练时的帧数
     type: StandardSampler    # 占位符，表示使用标准 Mini-Batch 采样
-  
   # DDP 参数
   sync_BN: false
   fix_BN: false
-  find_unused_parameters: true
+  find_unused_parameters: false
+
+  # 检查点加载设置
+  restore_ckpt_strict: false # 训练中断恢复时也需要 False(False，因为我们没存 CLIP 参数
+  restore_hint: 0
 
 # 评估配置
 evaluator_cfg:
   sampler:
-      batch_size: 32           # 测试时的 Batch Size
+      batch_size: 4           # 测试时的 Batch Size
       test_max_frames: all     # 评估时的帧数 (如果有)
       type: InferenceSampler   # 占位符
+
+  # 测试时: 设为 0 或 2，防止内存爆炸 
+  num_workers: 2
+
+  metric_cfg:
+    # 🔥 新增：自定义 R@k 列表
+    k_list: [1, 5, 10] 
+    
+    # 视角分组 (保持不变)
+    view_groups:
+      front: ["000"]
+      front-side: ["018","036","054"]
+      side: ["072","090","108"]
+      back-side: ["126","144","162"]
+      back: ["180"]
+
+  save_name: GaitCIR_Baseline_alpha0.5 # 注意保存名称是否一致
+
+  enable_float16: false       # 测试时可以开启 FP16 加速 (CLIP 推理通常支持)
+  restore_ckpt_strict: false # 必须是 False，因为我们没存 CLIP 参数
+  restore_hint: 40000        # 指定要测试的权重 (Iter 数)

@@ -1,4 +1,4 @@
-# # **************** For CCPG ****************
+# # **************** For CCPG/CASIA-B ****************
 # # Baseline
 # CUDA_VISIBLE_DEVICES=0 python -m torch.distributed.run --nproc_per_node=1 opengait/main.py --cfgs configs/gaitcir/default_ccpg.yaml --phase train
 export NCCL_P2P_DISABLE=1
@@ -7,10 +7,10 @@ export NCCL_DEBUG=INFO  # 开启日志，万一报错可以看到具体在哪卡
 
 # 原有的启动命令（保持你的 BatchSize=8 或 16 配置）
 # 确保使用 torch.distributed.run 启动
-CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.run \
-    --nproc_per_node=2 \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python -m torch.distributed.run \
+    --nproc_per_node=4 \
     opengait/main.py \
-    --cfgs configs/gaitcir/default.yaml \
+    --cfgs configs/gaitcir/default_ccpg.yaml \
     --phase train
 
 # # GaitSet

@@ -3,7 +3,7 @@ import json
 import argparse
 from tqdm import tqdm
 
-def generate_ccpg_meta_aligned(data_root, output_path):
+def generate_SUSTech1K_meta_aligned(data_root, output_path):
     """
     生成与 CASIA-B 格式完全一致的 SUSTech1k 元数据。
     
@@ -12,7 +12,7 @@ def generate_ccpg_meta_aligned(data_root, output_path):
         "unique_key": {
             "sid": "0000",
             "condition": "00-nm",
-            "view": "000", #此处为角度
+            "view": "000", #此处为角度{000,000-far,045,090,090-near,...,315}
             "seq_path": "0000/00-nm/000/05-000-Camera-RGB_raw.pkl",
             "static_caption": "A person  ..."
         }

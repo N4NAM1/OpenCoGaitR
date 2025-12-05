@@ -2,7 +2,9 @@ import torch
 import numpy as np
 import torch.nn.functional as F
 
+from prettytable import PrettyTable
 from utils import is_tensor
+from collections import defaultdict
 
 
 def cuda_dist(x, y, metric='euc'):
@@ -209,42 +211,133 @@ def evaluate_many(distmat, q_pids, g_pids, q_camids, g_camids, max_rank=50):
 
 
 
+
+
+def compute_rank_k_ap(sim_mat, gt_mask, k_list=[1, 5, 10]):
+    """
+    计算 R@K 和 mAP
+    """
+    device = sim_mat.device
+    num_q = sim_mat.size(0)
+    
+    # 1. 排序
+    scores, indices = torch.sort(sim_mat, dim=1, descending=True)
+    
+    # 2. 重排 Ground Truth
+    gts = torch.gather(gt_mask.float(), 1, indices)
+    
+    results = {}
+    
+    # --- R@K ---
+    for k in k_list:
+        if k > gts.size(1):
+            results[f'R{k}'] = 100.0
+        else:
+            hits = (gts[:, :k].sum(dim=1) > 0).float()
+            results[f'R{k}'] = hits.mean().item() * 100.0
+            
+    # --- mAP ---
+    cumsum = torch.cumsum(gts, dim=1)
+    ranks = torch.arange(1, gts.size(1) + 1, device=device).unsqueeze(0)
+    precision = cumsum / ranks
+    
+    ap_sum = (precision * gts).sum(dim=1)
+    num_rel = gts.sum(dim=1)
+    
+    mask = num_rel > 0
+    ap = torch.zeros(num_q, device=device)
+    ap[mask] = ap_sum[mask] / num_rel[mask]
+    
+    results['mAP'] = ap.mean().item() * 100.0
+    
+    return results
+
 # =========================================================
-# 1. 向量化预处理工具
+# 2. 向量化元数据 (View Groups 解析)
 # =========================================================
 
 def vectorize_metadata(meta_list, dataset_name, config, device):
     """
-    将元数据列表转换为 GPU Tensor 字典。
+    将 meta 解析为 Tensor，核心：将角度映射为 Group ID
     """
     N = len(meta_list)
     vec_data = {}
     
-    # 1. 基础属性: SID
+    # ID
     raw_sids = [m['sid'] for m in meta_list]
     _, sid_indices = np.unique(raw_sids, return_inverse=True)
     vec_data['sid'] = torch.tensor(sid_indices, device=device)
 
+    # === CASIA-B 逻辑 ===
     if 'CASIA-B' in dataset_name:
-        # --- CASIA-B ---
-        # 视角映射
-        view_map = {}
-        view_groups = config.get('view_groups', {}) 
-        for grp_idx, (grp_name, views) in enumerate(view_groups.items()):
-            for v in views: view_map[v] = grp_idx
+        # 1. 解析 View Groups
+        # config 示例: {'view_groups': {'front': ['000'], 'side': ['090']...}}
+        view_groups = config.get('view_groups', {})
         
-        tar_views = [view_map.get(m['tar_view'], -1) for m in meta_list]
-        vec_data['tar_view'] = torch.tensor(tar_views, device=device)
+        # 构建 Angle -> Group ID 映射
+        angle_to_gid = {}
+        if view_groups:
+            # 排序保证 ID 稳定
+            sorted_keys = sorted(view_groups.keys())
+            for gid, gname in enumerate(sorted_keys):
+                for angle in view_groups[gname]:
+                    angle_to_gid[str(int(angle))] = gid
+                    angle_to_gid[int(angle)] = gid
         
-        # 状态映射
-        raw_conds = [m['tar_cond'] for m in meta_list]
-        _, cond_indices = np.unique(raw_conds, return_inverse=True)
-        vec_data['tar_cond'] = torch.tensor(cond_indices, device=device)
+        def get_group_id(angle_val):
+            ang_int = int(angle_val)
+            # 如果有分组配置，返回组ID；否则返回角度本身(精确匹配)
+            return angle_to_group_id.get(ang_int, ang_int)
 
+        angle_to_group_id = angle_to_gid 
+
+        # 2. 提取数据 (Target & Reference)
+        tar_grp_ids = []
+        ref_grp_ids = []
+        
+        ref_conds, tar_conds = [], []
+        
+        for m in meta_list:
+            # Target View -> Group ID (用于 Strict 和 Soft)
+            # 注意：按照你的要求，Strict 也是粗粒度，所以我们这里只存 Group ID
+            tar_grp_ids.append(get_group_id(m.get('view', '000')))
+            
+            # Target Attribute (Condition) -> 用于 Strict 和 Soft
+            tar_conds.append(str(m.get('cond', 'nm')).split('-')[0]) 
+            
+            # Reference View -> Group ID (用于判断是否 Change)
+            if 'ref_cond' in m:
+                ref_grp_ids.append(get_group_id(m['ref_view']))
+                ref_conds.append(str(m['ref_cond']).split('-')[0])
+            else:
+                ref_grp_ids.append(-1)
+                ref_conds.append('none')
+
+        # 3. 转 Tensor
+        vec_data['tar_view_grp'] = torch.tensor(tar_grp_ids, device=device)
+        vec_data['gal_view_grp'] = vec_data['tar_view_grp'] # Gallery 也是 Group ID
+        vec_data['ref_view_grp'] = torch.tensor(ref_grp_ids, device=device)
+
+        # Condition 处理
+        # 建立统一的 Cond 映射字典
+        all_conds = sorted(list(set(ref_conds + tar_conds)))
+        cond_map = {c: i for i, c in enumerate(all_conds)}
+        
+        vec_data['tar_cond'] = torch.tensor([cond_map[c] for c in tar_conds], device=device)
+        vec_data['gal_cond'] = vec_data['tar_cond']
+        vec_data['ref_cond'] = torch.tensor([cond_map[c] for c in ref_conds], device=device)
+        
+        # 🔥 计算 GT 变化 (用于 Soft)
+        # 1. View Group Changed? (Ref Group != Tar Group)
+        vec_data['gt_view_grp_changed'] = (vec_data['ref_view_grp'] != vec_data['tar_view_grp'])
+        
+        # 2. Attribute Changed? (Ref Cond != Tar Cond)
+        vec_data['gt_cond_changed'] = (vec_data['ref_cond'] != vec_data['tar_cond'])
+
+    # === CCPG 逻辑 (保持不变) ===
     elif 'CCPG' in dataset_name:
-        # --- CCPG ---
         def parse(cond_str):
-            parts = cond_str.split('_')
+            parts = str(cond_str).split('_')
             u, d, bag = 0, 0, 0
             for p in parts:
                 if p.startswith('U'): u = int(p[1:])
@@ -252,224 +345,166 @@ def vectorize_metadata(meta_list, dataset_name, config, device):
                 elif p == 'BG': bag = 1
             return u, d, bag
 
-        ref_u, ref_d, ref_bag = np.zeros(N), np.zeros(N), np.zeros(N)
-        tar_u, tar_d, tar_bag = np.zeros(N), np.zeros(N), np.zeros(N)
+        ref_u = torch.zeros(N, dtype=torch.long, device=device)
+        ref_d = torch.zeros(N, dtype=torch.long, device=device)
+        ref_bag = torch.zeros(N, dtype=torch.long, device=device)
+        tar_u = torch.zeros(N, dtype=torch.long, device=device)
+        tar_d = torch.zeros(N, dtype=torch.long, device=device)
+        tar_bag = torch.zeros(N, dtype=torch.long, device=device)
         ref_views, tar_views = [], []
 
         for i, m in enumerate(meta_list):
-            ru, rd, rb = parse(m['ref_cond'])
-            ref_u[i], ref_d[i], ref_bag[i] = ru, rd, rb
-            ref_views.append(m['ref_view'])
+            if 'ref_cond' in m:
+                ru, rd, rb = parse(m['ref_cond'])
+                ref_u[i], ref_d[i], ref_bag[i] = ru, rd, rb
+                ref_views.append(m['ref_view'])
+            else:
+                ref_views.append(m.get('view', '000'))
             
-            tu, td, tb = parse(m['tar_cond'])
+            tu, td, tb = parse(m['cond'])
             tar_u[i], tar_d[i], tar_bag[i] = tu, td, tb
-            tar_views.append(m['tar_view'])
+            tar_views.append(m['view'])
 
-        # 转 Tensor
-        vec_data['ref_u'] = torch.tensor(ref_u, device=device)
-        vec_data['ref_d'] = torch.tensor(ref_d, device=device)
-        vec_data['tar_bag'] = torch.tensor(tar_bag, device=device) # [N]
+        vec_data['ref_u'], vec_data['ref_d'], vec_data['ref_bag'] = ref_u, ref_d, ref_bag
+        vec_data['tar_u'], vec_data['tar_d'], vec_data['tar_bag'] = tar_u, tar_d, tar_bag 
+        vec_data['gal_u'], vec_data['gal_d'], vec_data['gal_bag'] = tar_u, tar_d, tar_bag
         
-        # 视角处理
-        _, rv_ids = np.unique(ref_views, return_inverse=True)
-        _, tv_ids = np.unique(tar_views, return_inverse=True)
-        vec_data['ref_view'] = torch.tensor(rv_ids, device=device)
-        vec_data['tar_view'] = torch.tensor(tv_ids, device=device)
+        all_views = sorted(list(set(ref_views + tar_views)))
+        view_to_id = {v: k for k, v in enumerate(all_views)}
+        vec_data['ref_view'] = torch.tensor([view_to_id[v] for v in ref_views], device=device)
+        vec_data['tar_view'] = torch.tensor([view_to_id[v] for v in tar_views], device=device)
         
-        # 预计算 Query 自身的属性变化 (GT)
-        # 换装：GT相对于Ref是否换了
-        vec_data['gt_cloth_changed'] = (vec_data['ref_u'] != torch.tensor(tar_u, device=device)) | \
-                                       (vec_data['ref_d'] != torch.tensor(tar_d, device=device))
-        # 换视角：GT相对于Ref是否换了
+        vec_data['gt_cloth_changed'] = (ref_u != tar_u) | (ref_d != tar_d)
         vec_data['gt_view_changed'] = (vec_data['ref_view'] != vec_data['tar_view'])
-
-        # Gallery 属性 (Gallery 是 Target Image)
-        vec_data['gal_u'] = torch.tensor(tar_u, device=device)
-        vec_data['gal_d'] = torch.tensor(tar_d, device=device)
+        vec_data['gt_bag_changed'] = (ref_bag != tar_bag)
 
     return vec_data
 
 # =========================================================
-# 2. 核心匹配矩阵计算 (Components)
+# 3. 匹配逻辑 (Core Logic)
 # =========================================================
 
 def compute_match_matrices(q_vec, g_vec, dataset_name):
     """
-    返回基础匹配组件字典 (components)
+    计算匹配矩阵 (Gallery vs Target)
     """
-    # ID 匹配 [N, M]
     mat_id = (q_vec['sid'][:, None] == g_vec['sid'][None, :])
 
     if 'CASIA-B' in dataset_name:
-        mat_view = (q_vec['tar_view'][:, None] == g_vec['tar_view'][None, :])
-        mat_cond = (q_vec['tar_cond'][:, None] == g_vec['tar_cond'][None, :])
-        return mat_id, {'view': mat_view, 'cond': mat_cond}
+        # 1. ViewGroup 匹配 (Strict & Soft)
+        # 你的要求：Strict要粗粒度，Soft也要对上Group
+        ret_view_grp_match = (q_vec['tar_view_grp'][:, None] == g_vec['gal_view_grp'][None, :])
+        
+        # 2. Attribute 匹配 (Strict & Soft)
+        # 你的要求：Strict要严格对应，Soft变了也要严格对应
+        ret_cond_match = (q_vec['tar_cond'][:, None] == g_vec['gal_cond'][None, :])
+        
+        return mat_id, {
+            'ret_view_grp_match': ret_view_grp_match, 
+            'ret_cond_match': ret_cond_match
+        }
 
     elif 'CCPG' in dataset_name:
-        # 1. 背包 (Strict Match)
-        mat_bag = (q_vec['tar_bag'][:, None] == g_vec['tar_bag'][None, :])
-        
-        # 2. 换装 (Relative Change Match)
-        # Gallery(Retrieved) 相对于 Query(Ref) 的变化
+        ret_bag_match = (q_vec['tar_bag'][:, None] == g_vec['gal_bag'][None, :])
         ret_u_changed = (g_vec['gal_u'][None, :] != q_vec['ref_u'][:, None]) 
         ret_d_changed = (g_vec['gal_d'][None, :] != q_vec['ref_d'][:, None])
         ret_cloth_changed = ret_u_changed | ret_d_changed
-        # 逻辑：GT 变了 == Ret 变了
-        mat_cloth = (q_vec['gt_cloth_changed'][:, None] == ret_cloth_changed)
-        
-        # 3. 视角 (Relative Change Match)
         ret_view_changed = (g_vec['tar_view'][None, :] != q_vec['ref_view'][:, None])
-        gt_view_req_change = q_vec['gt_view_changed'][:, None]
-        # 逻辑：GT 变了 == Ret 变了
-        mat_view = (gt_view_req_change == ret_view_changed)
         
-        return mat_id, {'bag': mat_bag, 'cloth': mat_cloth, 'view': mat_view}
+        return mat_id, {
+            'bag_match': ret_bag_match,
+            'ret_cloth_changed': ret_cloth_changed,
+            'ret_view_changed': ret_view_changed
+        }
 
     return mat_id, {}
 
 # =========================================================
-# 3. 指标计算与主流程 (Logic Composition)
+# 4. 主入口
 # =========================================================
 
-def compute_rank_k_ap(sim_mat, gt_mask, k_list):
-    """ 计算 R@K 和 mAP """
-    # 1. 排序
-    scores, indices = torch.sort(sim_mat, dim=1, descending=True)
-    # 2. 重排 GT
-    gts = torch.gather(gt_mask.float(), 1, indices)
-    
-    results = {}
-    
-    # R@K
-    for k in k_list:
-        if k > gts.shape[1]:
-            results[f'R{k}'] = 100.0
-        else:
-            # 只要前K个里有一个对，就算对 (Recall / Hit Rate)
-            hit_k = (gts[:, :k].sum(dim=1) > 0).float().mean().item() * 100
-            results[f'R{k}'] = hit_k
-    
-    # mAP
-    cumsum = torch.cumsum(gts, dim=1)
-    ranks = torch.arange(1, gts.size(1) + 1, device=gts.device).unsqueeze(0)
-    precision = cumsum / ranks
-    
-    ap_sum = (precision * gts).sum(dim=1)
-    num_rel = gts.sum(dim=1)
-    mask = num_rel > 0
-    ap = torch.zeros_like(ap_sum)
-    ap[mask] = ap_sum[mask] / num_rel[mask]
-    results['mAP'] = ap.mean().item() * 100
-    
-    return results
-
-def compute_gaitcir_metrics(q_feats, g_feats, q_metas, g_metas, dataset_name, tasks, config):
-    """
-    主计算函数
-    """
+def compute_gaitcir_metrics(q_feats, g_feats, q_metas, g_metas, dataset_name, tasks, config={}):
     device = q_feats.device
-    k_list = config.get('k_list', [1, 5, 10])
-    
-    # 1. 向量化
-    q_vec = vectorize_metadata(q_metas, dataset_name, config, device)
-    g_vec = vectorize_metadata(g_metas, dataset_name, config, device)
-    
-    # 2. 相似度
     q_feats = F.normalize(q_feats, p=2, dim=1)
     g_feats = F.normalize(g_feats, p=2, dim=1)
     sim_mat = torch.mm(q_feats, g_feats.t())
     
-    # 3. 获取组件矩阵
+    q_vec = vectorize_metadata(q_metas, dataset_name, config, device)
+    g_vec = vectorize_metadata(g_metas, dataset_name, config, device)
+    
     mat_id, comps = compute_match_matrices(q_vec, g_vec, dataset_name)
     
-    # 4. 🔥 构造全局 Mask (Vectorized Logic Composition)
-    # 这一步是实现 "Overall Soft = 混合加权" 的关键
+    # 🔥🔥🔥 逻辑定义部分 🔥🔥🔥
     
     if 'CASIA-B' in dataset_name:
-        # Strict: ID + View + Cond
-        mask_strict = mat_id & comps['view'] & comps['cond']
-        # Soft: ID + Cond (忽略 View)
-        mask_soft = mat_id & comps['cond']
+        # GT Change Flags (Ref vs Tar)
+        gt_cond_changed = q_vec['gt_cond_changed'][:, None]
+        gt_view_grp_changed = q_vec['gt_view_grp_changed'][:, None] 
         
+        # Gallery Matches (Gal vs Tar)
+        ret_cond_match = comps['ret_cond_match']     # Attribute 严格对应
+        ret_view_grp_match = comps['ret_view_grp_match'] # View Group 对上
+        
+        # === Strict (Coarse-View, Strict-Attr) ===
+        # 逻辑：View Group 必须对上 + Attribute 必须对上
+        mask_strict = mat_id & ret_view_grp_match & ret_cond_match
+        
+        # === Soft (Conditional Match) ===
+        # 1. View: 只要 View Group 变了，Gallery Group 就要对上 (Match)；没变不 Care
+        match_view_soft = (~gt_view_grp_changed) | ret_view_grp_match
+        
+        # 2. Attribute: 只要 Attribute 变了，Gallery Attribute 就要对上 (Match)；没变不 Care
+        # 注意：这里改成了 ret_cond_match，而不是之前的 ret_changed
+        match_cond_soft = (~gt_cond_changed) | ret_cond_match
+        
+        mask_soft = mat_id & match_cond_soft & match_view_soft
+
     elif 'CCPG' in dataset_name:
-        # 组件引用
-        m_bag, m_cloth, m_view = comps['bag'], comps['cloth'], comps['view']
+        # CCPG 逻辑保持不变 (基于 Changed 状态)
+        ret_bag_match = comps['bag_match']
+        ret_cloth_changed = comps['ret_cloth_changed']
+        ret_view_changed = comps['ret_view_changed']
         
-        # Strict: ID + Bag + Cloth + View (全对)
-        mask_strict = mat_id & m_bag & m_cloth & m_view
+        gt_cloth_changed = q_vec['gt_cloth_changed'][:, None]
+        gt_view_changed = q_vec['gt_view_changed'][:, None]
+        gt_bag_changed = q_vec['gt_bag_changed'][:, None] 
         
-        # Soft: 根据每个样本的 Task 类型动态决定
-        # 将 tasks 列表转为 GPU Tensor 索引以便广播
-        task_array = np.array(tasks)
+        match_cloth_strict = (gt_cloth_changed == ret_cloth_changed)
+        match_view_strict = (gt_view_changed == ret_view_changed)
+        match_bag_strict = ret_bag_match 
+        mask_strict = mat_id & match_bag_strict & match_cloth_strict & match_view_strict
         
-        # 创建 Task 对应的布尔索引 [N, 1]
-        is_attr = torch.tensor(task_array == 'attribute_change', device=device).unsqueeze(1)
-        is_view = torch.tensor(task_array == 'viewpoint_change', device=device).unsqueeze(1)
-        is_comp = torch.tensor(task_array == 'composite_change', device=device).unsqueeze(1)
+        match_cloth_soft = (~gt_cloth_changed) | ret_cloth_changed
+        match_view_soft = (~gt_view_changed) | ret_view_changed
+        match_bag_soft = (~gt_bag_changed) | ret_bag_match
         
-        # 定义每种 Task 的 Soft 标准
-        # 1. Attribute Task: 忽略 View (ID + Bag + Cloth)
-        soft_attr = mat_id & m_bag & m_cloth
+        mask_soft = mat_id & match_bag_soft & match_cloth_soft & match_view_soft
         
-        # 2. Viewpoint Task: 忽略 Cloth/Bag (ID + View) -> 通常 Viewpoint 任务确实不关注衣服
-        # 但如果你的 Viewpoint 任务也隐含了“衣服不变”，则应该加上 m_cloth
-        # 按照之前的逻辑: "忽略属性错误" -> ID + View
-        soft_view = mat_id & m_view
-        
-        # 3. Composite Task: Soft = Strict (全对)
-        soft_comp = mask_strict
-        
-        # 4. 混合生成全局 Soft Mask
-        # 逻辑: (是Attr任务 & 用Attr标准) | (是View任务 & 用View标准) ...
-        # 对于不属于这三类的 (如 Overall 里的其他)，默认用 Strict
-        is_other = ~(is_attr | is_view | is_comp)
-        
-        mask_soft = (is_attr & soft_attr) | \
-                    (is_view & soft_view) | \
-                    (is_comp & soft_comp) | \
-                    (is_other & mask_strict)
-                    
     else:
-        # 默认
         mask_strict = mat_id
         mask_soft = mat_id
-
-    # 5. ID Mask
-    mask_id_only = mat_id
-
-    # 6. 分组统计
+        
+    mask_id = mat_id
+    
+    # 5. 分任务统计
     final_output = {}
     unique_tasks = sorted(list(set(tasks)))
     if "Overall" not in unique_tasks: unique_tasks.append("Overall")
-    
     task_array = np.array(tasks)
     
     for task_name in unique_tasks:
-        # 获取索引
         if task_name == "Overall":
             indices = torch.arange(len(tasks), device=device)
         else:
-            # np.where 返回 tuple
-            indices = torch.tensor(np.where(task_array == task_name)[0], device=device)
+            idx_list = np.where(task_array == task_name)[0]
+            if len(idx_list) == 0: continue
+            indices = torch.tensor(idx_list, device=device)
             
-        if len(indices) == 0: continue
-        
-        # 切片
         sub_sim = sim_mat[indices]
-        
-        # 只需要切行 (Query 维度)，列 (Gallery) 保持全量
-        sub_strict = mask_strict[indices]
-        sub_soft = mask_soft[indices]     # 这里已经是混合好的正确 Soft Mask
-        sub_id = mask_id_only[indices]
-        
         metrics = {'Count': len(indices)}
-        
-        # 计算三套指标
-        metrics['Strict'] = compute_rank_k_ap(sub_sim, sub_strict, k_list)
-        metrics['Soft'] = compute_rank_k_ap(sub_sim, sub_soft, k_list)
-        metrics['ID'] = compute_rank_k_ap(sub_sim, sub_id, k_list)
-        
+        metrics['Strict'] = compute_rank_k_ap(sub_sim, mask_strict[indices])
+        metrics['Soft'] = compute_rank_k_ap(sub_sim, mask_soft[indices])
+        metrics['ID'] = compute_rank_k_ap(sub_sim, mask_id[indices])
         final_output[task_name] = metrics
         
     return final_output
-

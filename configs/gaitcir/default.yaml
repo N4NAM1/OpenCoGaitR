@@ -28,8 +28,7 @@ model_cfg:
   hidden_dim: 2048
   loss_alpha: 0.5
 
-  # 🔥 训练时: 开启多进程加速读取
-  num_workers: 8
+
 
 # 优化器
 optimizer_cfg:
@@ -46,20 +45,22 @@ scheduler_cfg:
 loss_cfg:
   type: CrossEntropyLoss  # 指定 Loss 类型
   log_prefix: clip_loss
-  alpha: 0.5              # 逆向 Loss 权重 (Inverse Loss Weight)（cosine_similarity）
+  alpha: 0             # 逆向 Loss 权重 (Inverse Loss Weight)（cosine_similarity）
 
 # 训练引擎配置
 trainer_cfg:
-  save_name: GaitCIR_Baseline_alpha0.5 #注意保存名称
+  save_name: GaitCIR_Baseline #注意保存名称
   epochs: 60
+    # 🔥 训练时: 开启多进程加速读取
+  num_workers: 8
 
   enable_float16: true
 
   clip_grad_norm: 5.0
 
-  log_iter: 10
-  save_iter: 10
-  total_iter: 40
+  log_iter: 10000
+  save_iter: 10000
+  total_iter: 40000
   with_test: false  # 训练中途是否测试
   sampler:
     batch_size: 64          # 训练时的 Batch Size
@@ -87,12 +88,7 @@ evaluator_cfg:
   metric_cfg:
     # 🔥 新增：自定义 R@k 列表
     k_list: [1, 5, 10] 
-    
-    # 任务 Soft 规则 (保持不变)
-    soft_rules:
-      attribute_change: ["view"]
-      viewpoint_change: ["cond"]
-      composite_change: []
+  
       
     # 视角分组 (保持不变)
     view_groups:

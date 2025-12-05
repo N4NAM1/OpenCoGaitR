@@ -207,7 +207,7 @@ class BaseModel(nn.Module, metaclass=ABCMeta):
             }
             save_path = osp.join(self.save_path, 'checkpoints/{}-{:0>5}.pt'.format(save_name, iteration))
             # 禁用压缩
-            torch.save(checkpoint, save_path, _use_zipfile=False)
+            torch.save(checkpoint, save_path, _use_new_zipfile_serialization=False)
             self.msg_mgr.log_info(f"💾 Checkpoint saved (Lightweight): {save_path}")
 
     def resume_ckpt(self, restore_hint):
@@ -345,15 +345,17 @@ class BaseModel(nn.Module, metaclass=ABCMeta):
 
     @staticmethod
     def run_test(model):
+        """
+        [GaitCIR 修复版] 支持多卡 DDP 结果汇聚 (All-Gather)
+        """
         model.eval()
         rank = torch.distributed.get_rank()
+        world_size = torch.distributed.get_world_size()
         loader = model.test_loader
         
-        all_q, all_t = [], []
-        all_tasks, all_metas = [], []
-        
-        # 开启 FP16 加速测试
-        use_fp16 = model.engine_cfg.get('enable_float16', False)
+        # 1. 本地推理 (只跑当前卡分到的数据)
+        local_q, local_t = [], []
+        local_tasks, local_metas = [], []
         
         if rank == 0: pbar = tqdm(loader, desc="🔍 Inference")
         else: pbar = loader
@@ -362,31 +364,68 @@ class BaseModel(nn.Module, metaclass=ABCMeta):
             for inputs in pbar:
                 ipts = model.inputs_pretreament(inputs)
                 
-                with autocast(enabled=use_fp16):
+                # 开启 FP16 推理
+                with autocast(enabled=model.engine_cfg.get('enable_float16', False)):
                     outputs = model(ipts) 
                 
-                # 显式转 float32 保证精度，并搬回 CPU
-                all_q.append(outputs['query_feat'].float().cpu())
-                all_t.append(outputs['tar_feat'].float().cpu())
-                all_tasks.extend(outputs['tasks'])
-                all_metas.extend(outputs['metas'])
+                # 必须转回 CPU，否则 gather 时显存会爆炸
+                local_q.append(outputs['query_feat'].float().cpu())
+                local_t.append(outputs['tar_feat'].float().cpu())
+                local_tasks.extend(outputs['tasks'])
+                local_metas.extend(outputs['metas'])
                 
                 if rank == 0: pbar.update(1)
 
+        # 2. 整理本地数据
+        local_data = {
+            'q': torch.cat(local_q, dim=0),
+            't': torch.cat(local_t, dim=0),
+            'tasks': local_tasks,
+            'metas': local_metas
+        }
+
+        # 3. DDP 汇聚 (Gather All)
+        # 无论单卡还是多卡，统一走 Gather 逻辑保证一致性
+        gathered_data = [None for _ in range(world_size)]
+        
+        # all_gather_object 可以汇聚任意 Python 对象 (Tensor, List, Dict)
+        # 注意：这会涉及序列化，数据量极大时可能会稍慢，但最稳健
+        torch.distributed.all_gather_object(gathered_data, local_data)
+
+        # 4. 仅在主进程解包并评测
         if rank == 0:
-            print(f"✅ Inference Done. Aggregating...")
+            print(f"✅ Inference Done. Aggregating results from {world_size} GPUs...")
             
+            # 解包并拼接所有卡的数据
+            all_q_feats = []
+            all_t_feats = []
+            all_tasks_final = []
+            all_metas_final = []
+            
+            for node_data in gathered_data:
+                all_q_feats.append(node_data['q'])
+                all_t_feats.append(node_data['t'])
+                all_tasks_final.extend(node_data['tasks'])
+                all_metas_final.extend(node_data['metas'])
+            
+            # 拼接 Tensor
+            final_q = torch.cat(all_q_feats, dim=0)
+            final_t = torch.cat(all_t_feats, dim=0)
+            
+            print(f"📊 Total Samples: {len(final_q)} (Local was {len(local_data['q'])})")
+            print(f"📊 Computing Metrics...")
+            
+            # 打包给 Evaluator
             eval_data = {
-                'q_feats': torch.cat(all_q, dim=0),
-                'g_feats': torch.cat(all_t, dim=0),
-                'q_metas': all_metas,
-                'g_metas': all_metas,
-                'tasks': all_tasks
+                'q_feats': final_q,
+                'g_feats': final_t,
+                'q_metas': all_metas_final,
+                'g_metas': all_metas_final,
+                'tasks': all_tasks_final
             }
             
             eval_cfg = model.cfgs['evaluator_cfg']
             metric_cfg = eval_cfg.get('metric_cfg', {})
             dataset_name = model.cfgs['data_cfg']['dataset_name']
 
-            print(f"📊 Calling Evaluator for {dataset_name}...")
-            evaluate_GaitCIR(eval_data, dataset_name, metric_cfg)
+            evaluate_GaitCIR(eval_data, dataset_name, metric_cfg, save_path=model.save_path)
