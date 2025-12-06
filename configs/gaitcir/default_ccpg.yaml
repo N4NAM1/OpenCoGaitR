@@ -26,7 +26,6 @@ model_cfg:
   # Combiner 参数
   projection_dim: 512
   hidden_dim: 2048
-  loss_alpha: 0.5
 
 
 
@@ -45,11 +44,11 @@ scheduler_cfg:
 loss_cfg:
   type: CrossEntropyLoss  # 指定 Loss 类型
   log_prefix: clip_loss
-  alpha: 0.5              # 逆向 Loss 权重 (Inverse Loss Weight)（cosine_similarity）
+  alpha: 2             # 逆向 Loss 权重 (Inverse Loss Weight)（cosine_similarity）
 
 # 训练引擎配置
 trainer_cfg:
-  save_name: GaitCIR_Baseline_alpha0.5 #注意保存名称
+  save_name: GaitCIR_Baseline_alpha2 #注意保存名称
   epochs: 60
   # 🔥 训练时: 开启多进程加速读取
   num_workers: 16

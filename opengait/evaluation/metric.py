@@ -212,7 +212,6 @@ def evaluate_many(distmat, q_pids, g_pids, q_camids, g_camids, max_rank=50):
 
 
 
-
 def compute_rank_k_ap(sim_mat, gt_mask, k_list=[1, 5, 10]):
     """
     计算 R@K 和 mAP
@@ -299,11 +298,10 @@ def vectorize_metadata(meta_list, dataset_name, config, device):
         
         for m in meta_list:
             # Target View -> Group ID (用于 Strict 和 Soft)
-            # 注意：按照你的要求，Strict 也是粗粒度，所以我们这里只存 Group ID
-            tar_grp_ids.append(get_group_id(m.get('view', '000')))
+            tar_grp_ids.append(get_group_id(m.get('tar_view')))
             
             # Target Attribute (Condition) -> 用于 Strict 和 Soft
-            tar_conds.append(str(m.get('cond', 'nm')).split('-')[0]) 
+            tar_conds.append(str(m.get('tar_cond')).split('-')[0]) 
             
             # Reference View -> Group ID (用于判断是否 Change)
             if 'ref_cond' in m:
@@ -359,11 +357,11 @@ def vectorize_metadata(meta_list, dataset_name, config, device):
                 ref_u[i], ref_d[i], ref_bag[i] = ru, rd, rb
                 ref_views.append(m['ref_view'])
             else:
-                ref_views.append(m.get('view', '000'))
+                ref_views.append(m.get('ref_view'))
             
-            tu, td, tb = parse(m['cond'])
+            tu, td, tb = parse(m['tar_cond'])
             tar_u[i], tar_d[i], tar_bag[i] = tu, td, tb
-            tar_views.append(m['view'])
+            tar_views.append(m['tar_view'])
 
         vec_data['ref_u'], vec_data['ref_d'], vec_data['ref_bag'] = ref_u, ref_d, ref_bag
         vec_data['tar_u'], vec_data['tar_d'], vec_data['tar_bag'] = tar_u, tar_d, tar_bag 
@@ -389,7 +387,7 @@ def compute_match_matrices(q_vec, g_vec, dataset_name):
     计算匹配矩阵 (Gallery vs Target)
     """
     mat_id = (q_vec['sid'][:, None] == g_vec['sid'][None, :])
-
+#CASIA-B 逻辑有误
     if 'CASIA-B' in dataset_name:
         # 1. ViewGroup 匹配 (Strict & Soft)
         # 你的要求：Strict要粗粒度，Soft也要对上Group

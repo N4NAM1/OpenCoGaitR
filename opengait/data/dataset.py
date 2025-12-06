@@ -186,9 +186,6 @@ class GaitCIRDataset(Dataset):
                     "ref_cond": str(item['ref']['condition']),
                     "ref_view": str(item['ref']['view']),
 
-                    # 保留旧 Key 以防万一
-                    "view": str(item['tar']['view']),
-                    "seq_path": str(item['ref']['seq_path'])
                 }
             except Exception:
                 if self.mode == 'train': idx = np.random.randint(len(self.data)); retries += 1
