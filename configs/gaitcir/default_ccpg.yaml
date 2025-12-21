@@ -85,7 +85,7 @@ evaluator_cfg:
 
   metric_cfg:
     # 🔥 新增：自定义 R@k 列表
-    k_list: [1, 5, 10] 
+    k_list: [1, 5, 10, 50] 
     
     # 视角分组 (保持不变)
     view_groups:
@@ -95,7 +95,7 @@ evaluator_cfg:
       back-side: ["126","144","162"]
       back: ["180"]
 
-  save_name: GaitCIR_Baseline_alpha0.5 # 注意保存名称是否一致
+  save_name: GaitCIR_Baseline_alpha2 # 注意保存名称是否一致
 
   enable_float16: false       # 测试时可以开启 FP16 加速 (CLIP 推理通常支持)
   restore_ckpt_strict: false # 必须是 False，因为我们没存 CLIP 参数

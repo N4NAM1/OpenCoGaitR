@@ -387,7 +387,6 @@ def compute_match_matrices(q_vec, g_vec, dataset_name):
     计算匹配矩阵 (Gallery vs Target)
     """
     mat_id = (q_vec['sid'][:, None] == g_vec['sid'][None, :])
-#CASIA-B 逻辑有误
     if 'CASIA-B' in dataset_name:
         # 1. ViewGroup 匹配 (Strict & Soft)
         # 你的要求：Strict要粗粒度，Soft也要对上Group

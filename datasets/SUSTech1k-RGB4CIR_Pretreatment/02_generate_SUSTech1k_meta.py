@@ -13,7 +13,7 @@ def generate_SUSTech1K_meta_aligned(data_root, output_path):
             "sid": "0000",
             "condition": "00-nm",
             "view": "000", #此处为角度{000,000-far,045,090,090-near,...,315}
-            "seq_path": "0000/00-nm/000/05-000-Camera-RGB_raw.pkl",
+            "seq_path": "0000/00-nm/000/",
             "static_caption": "A person  ..."
         }
     }
@@ -87,8 +87,8 @@ def generate_SUSTech1K_meta_aligned(data_root, output_path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_root', type=str, required=True, help='CCPG_Processed absolute path')
-    parser.add_argument('--output', type=str, default='datasets/CCPG/meta_ccpg.json')
+    parser.add_argument('--data_root', type=str, required=True, help='sustech1k_Processed absolute path')
+    parser.add_argument('--output', type=str, default='datasets/SUSTech1K/meta_sustech1k.json')
     args = parser.parse_args()
     
-    generate_ccpg_meta_aligned(args.data_root, args.output)
+    generate_SUSTech1K_meta_aligned

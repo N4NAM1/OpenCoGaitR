@@ -315,8 +315,8 @@ if __name__ == "__main__":
     
     # 采样与分割配置
     parser.add_argument('--train_ids_count', type=int, default=100, help='前 N 个 ID 划分为训练集 (CCPG 默认 100)')
-    parser.add_argument('--sample_train', type=int, default=400, help='训练集每个 ID 采样的 Pair 数量')
-    parser.add_argument('--sample_test', type=int, default=100, help='测试集每个 ID 采样的 Pair 数量')
+    parser.add_argument('--sample_train', type=int, default=800, help='训练集每个 ID 采样的 Pair 数量')
+    parser.add_argument('--sample_test', type=int, default=200, help='测试集每个 ID 采样的 Pair 数量')
     
     args = parser.parse_args()
     
