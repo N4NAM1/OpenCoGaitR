@@ -430,6 +430,7 @@ def compute_gaitcir_metrics(q_feats, g_feats, q_metas, g_metas, dataset_name, ta
     g_vec = vectorize_metadata(g_metas, dataset_name, config, device)
     
     mat_id, comps = compute_match_matrices(q_vec, g_vec, dataset_name)
+    k_list = config.get('k_list', [1, 5, 10])
     
     # 🔥🔥🔥 逻辑定义部分 🔥🔥🔥
     
@@ -499,9 +500,10 @@ def compute_gaitcir_metrics(q_feats, g_feats, q_metas, g_metas, dataset_name, ta
             
         sub_sim = sim_mat[indices]
         metrics = {'Count': len(indices)}
-        metrics['Strict'] = compute_rank_k_ap(sub_sim, mask_strict[indices])
-        metrics['Soft'] = compute_rank_k_ap(sub_sim, mask_soft[indices])
-        metrics['ID'] = compute_rank_k_ap(sub_sim, mask_id[indices])
+
+        metrics['Strict'] = compute_rank_k_ap(sub_sim, mask_strict[indices], k_list)
+        metrics['Soft'] = compute_rank_k_ap(sub_sim, mask_soft[indices], k_list)
+        metrics['ID'] = compute_rank_k_ap(sub_sim, mask_id[indices], k_list)
         final_output[task_name] = metrics
         
     return final_output

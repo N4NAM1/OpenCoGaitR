@@ -6,7 +6,6 @@ from ..base_model import BaseModel
 
 # Combiner 类保持不变 (略)
 class Combiner(nn.Module):
-    # ... (保持你之前的代码) ...
     def __init__(self, clip_feature_dim: int, projection_dim: int, hidden_dim: int):
         super(Combiner, self).__init__()
         self.text_projection_layer = nn.Linear(clip_feature_dim, projection_dim)
@@ -29,7 +28,6 @@ class Combiner(nn.Module):
         mlp_out = self.output_layer(combined_features)
         sigma = self.dynamic_scalar(raw_combined)
         output = mlp_out + sigma * text_features + (1 - sigma) * image_features
-        # 🔥 安全归一化
         return F.normalize(output, p=2, dim=-1, eps=1e-6)
 
 class GaitCIRModel(BaseModel):
